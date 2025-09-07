@@ -5,8 +5,10 @@ A lightweight Node.js service built with [Hono](https://hono.dev/) for balancing
 ## Features
 
 - Local OAuth with PKCE, fixed redirect `http://localhost:1455/auth/callback`.
-- Persistent storage in `auths/` (JSON file + round-robin index).
-- Round-robin load balancing across stored accounts.
+- Persistent storage in `auths/` (JSON file + sticky index).
+- Sticky account usage: keep using the same account until it fails.
+  On 429 or other errors, retry once, then try a token refresh;
+  if still failing, disable that account for 3 hours and move to the next by add order.
 - Simple web UI to start OAuth login and view accounts.
 - `/v1/*` proxy to `https://chatgpt.com/backend-api/codex/*` with SSE stream support.
 
@@ -23,14 +25,18 @@ Open http://localhost:1455/ and click “Add OpenAI Account” to complete OAuth
 
 ## Using with Codex CLI
 
+The following keys must appear at the very top of your `~/.codex/config.toml`:
+
+```toml
+model_provider = "codex_equilibrium"
+model = "gpt-5"
+model_reasoning_effort = "high"
+```
+
 Point your Codex client to the `/v1` proxy, for example:
 
 ```toml
 # ~/.codex/config.toml
-model_provider = "codex_equilibrium"
-model = "gpt-5"
-model_reasoning_effort = "high"
-
 [model_providers.codex_equilibrium]
 name = "codex_equilibrium"
 base_url = "http://127.0.0.1:1455/v1"

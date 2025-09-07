@@ -1,0 +1,103 @@
+import { Hono } from 'hono';
+import { readRR, readTokens, removeRecord, updateRecord } from '../storage.js';
+import { maskToken, isCoolingDown, isExpired } from '../utils.js';
+import { refreshToken } from '../refresh.js';
+import type { TokenRecord } from '../types.js';
+
+export function registerAccounts(app: Hono) {
+  app.get('/accounts', async (c) => {
+    const tokens = await readTokens();
+    let rr = await readRR();
+    if (!Number.isFinite(rr) || rr < 0 || rr >= tokens.length) rr = 0;
+    const now = Date.now();
+    const accounts = tokens.map((t: TokenRecord, i: number) => {
+      let status = 'unknown';
+      let expires_in_seconds: number | undefined;
+      if (t.disabled) status = 'disabled';
+      else if (t.cooldown_until && Date.parse(t.cooldown_until) > now)
+        status = 'cooldown';
+      else if (t.expire) {
+        const tms = Date.parse(t.expire);
+        if (!Number.isNaN(tms)) {
+          const diff = Math.floor((tms - now) / 1000);
+          expires_in_seconds = diff;
+          if (diff <= 0) status = 'expired';
+          else if (diff <= 5 * 60) status = 'expiring-soon';
+          else status = 'active';
+        }
+      }
+
+      const usable = !t.disabled && !isCoolingDown(t) && !isExpired(t);
+      let ui_state: 'active' | 'waiting' | 'frozen' = 'waiting';
+      if (!usable) ui_state = 'frozen';
+      else if (i === rr) ui_state = 'active';
+
+      const cooldown_until_ms = t.cooldown_until
+        ? Date.parse(t.cooldown_until)
+        : NaN;
+      const cooldown_remaining_seconds =
+        !Number.isNaN(cooldown_until_ms) && cooldown_until_ms > now
+          ? Math.max(0, Math.floor((cooldown_until_ms - now) / 1000))
+          : 0;
+
+      return {
+        id: t.id,
+        email: t.email,
+        account_id: t.account_id,
+        created_at: t.created_at,
+        last_refresh: t.last_refresh,
+        last_used: t.last_used,
+        expire: t.expire,
+        expires_in_seconds,
+        status,
+        ui_state,
+        cooldown_until: t.cooldown_until,
+        cooldown_remaining_seconds,
+        fail_count: t.fail_count || 0,
+        last_error_code: t.last_error_code,
+        disabled: !!t.disabled,
+        token: maskToken(t.access_token),
+      };
+    });
+    return c.json({ accounts });
+  });
+
+  // Management: delete an account by id
+  app.delete('/accounts/:id', async (c) => {
+    const id = c.req.param('id');
+    await removeRecord(id);
+    return c.json({ ok: true });
+  });
+
+  // Management: force refresh a token
+  app.post('/accounts/:id/refresh', async (c) => {
+    const id = c.req.param('id');
+    const tokens = await readTokens();
+    const rec = tokens.find((t) => t.id === id);
+    if (!rec) return c.json({ error: 'not found' }, 404);
+    const updated = await refreshToken(rec);
+    if (!updated) return c.json({ error: 'refresh_failed' }, 500);
+    return c.json({ ok: true, id: updated.id, expire: updated.expire });
+  });
+
+  // Management: disable/enable
+  app.post('/accounts/:id/disable', async (c) => {
+    const id = c.req.param('id');
+    const tokens = await readTokens();
+    const rec = tokens.find((t: TokenRecord) => t.id === id);
+    if (!rec) return c.json({ error: 'not found' }, 404);
+    rec.disabled = true;
+    await updateRecord(rec);
+    return c.json({ ok: true });
+  });
+
+  app.post('/accounts/:id/enable', async (c) => {
+    const id = c.req.param('id');
+    const tokens = await readTokens();
+    const rec = tokens.find((t: TokenRecord) => t.id === id);
+    if (!rec) return c.json({ error: 'not found' }, 404);
+    rec.disabled = false;
+    await updateRecord(rec);
+    return c.json({ ok: true });
+  });
+}
