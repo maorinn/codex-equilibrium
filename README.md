@@ -23,6 +23,36 @@ npm start
 
 Open http://localhost:1456/ and click “Add OpenAI Account” to complete OAuth (or use the CLI login below). Tokens are saved to `auths/codex_tokens.json`.
 
+## Docker
+
+Build the image and run the server in a container. Mount `auths` as a volume so tokens persist outside the container.
+
+```bash
+# Build
+docker build -t codex-equilibrium .
+
+# Run (Linux/macOS)
+docker run -d \
+  --name codex-equilibrium \
+  -p 1456:1456 \
+  -v "$(pwd)/auths:/app/auths" \
+  codex-equilibrium
+
+# Run (PowerShell on Windows)
+docker run -d \
+  --name codex-equilibrium \
+  -p 1456:1456 \
+  -v ${PWD}/auths:/app/auths \
+  codex-equilibrium
+```
+
+Notes:
+- The container exposes port `1456`. Adjust the host port as needed.
+- The `auths` directory is required for token persistence and must be mounted: `-v <host_path>/auths:/app/auths`.
+- The image does not include your local `auths/` (see `.dockerignore`). Tokens will be created inside the mounted volume at runtime.
+- To add an account via browser, open `http://<host>:1456/` on your machine and use “Add OpenAI Account”.
+- For headless login, use the CLI against the container server host (see next section).
+
 ## CLI Login (headless server support)
 
 You can add an account from a machine with a browser and import it into a remote server:
