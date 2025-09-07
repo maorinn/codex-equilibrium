@@ -1,0 +1,24 @@
+{
+  "name": "codex-equilibrium",
+  "version": "1.0.0",
+  "description": "Lightweight Hono-based Node.js service that balances multiple ChatGPT Codex OAuth accounts, persists tokens locally, and proxies /v1/* with SSE streaming.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsc --moduleResolution NodeNext --module NodeNext --target ES2020 && node dist/index.js",
+    "build": "tsc --moduleResolution NodeNext --module NodeNext --target ES2020",
+    "start": "node dist/index.js",
+    "test": "echo \"No tests\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "hono": "^4.9.6",
+    "@hono/node-server": "^1.11.4",
+    "@types/node": "^20.11.30"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

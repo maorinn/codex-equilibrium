@@ -1,0 +1,4 @@
+auths/*
+!auths/.gitkeep
+node_modules
+dist
