@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
-import { readRR, readTokens, removeRecord, updateRecord } from '../storage.js';
-import { maskToken, isCoolingDown, isExpired } from '../utils.js';
+import { readRR, readTokens, removeRecord, updateRecord, writeTokens } from '../storage.js';
+import { maskToken, isCoolingDown, isExpired, decodeJwtPayload, parseExpireSeconds } from '../utils.js';
 import { refreshToken } from '../refresh.js';
 import type { TokenRecord } from '../types.js';
+import { randomUUID } from 'crypto';
 
 export function registerAccounts(app: Hono) {
   app.get('/accounts', async (c) => {
@@ -99,5 +100,39 @@ export function registerAccounts(app: Hono) {
     rec.disabled = false;
     await updateRecord(rec);
     return c.json({ ok: true });
+  });
+
+  // Import a token set obtained via CLI OAuth
+  app.post('/accounts/import', async (c) => {
+    let body: any = {};
+    try {
+      body = await c.req.json();
+    } catch {}
+    const access_token = body?.access_token;
+    if (!access_token) return c.json({ error: 'missing_access_token' }, 400);
+    const refresh_token = body?.refresh_token;
+    const id_token = body?.id_token;
+    const expires_in = body?.expires_in;
+    const expire = body?.expire;
+
+    const meta = decodeJwtPayload(id_token);
+    const rec: TokenRecord = {
+      id: randomUUID(),
+      access_token,
+      refresh_token,
+      id_token,
+      account_id: meta.account_id,
+      email: meta.email,
+      expire: expire ?? parseExpireSeconds(expires_in),
+      created_at: new Date().toISOString(),
+      last_refresh: new Date().toISOString(),
+      fail_count: 0,
+      last_error_code: undefined,
+      disabled: false,
+    };
+    const tokens = await readTokens();
+    tokens.push(rec);
+    await writeTokens(tokens);
+    return c.json({ ok: true, id: rec.id, email: rec.email });
   });
 }

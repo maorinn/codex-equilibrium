@@ -21,7 +21,21 @@ npm run build
 npm start
 ```
 
-Open http://localhost:1455/ and click “Add OpenAI Account” to complete OAuth. Tokens are saved to `auths/codex_tokens.json`.
+Open http://localhost:1456/ and click “Add OpenAI Account” to complete OAuth (or use the CLI login below). Tokens are saved to `auths/codex_tokens.json`.
+
+## CLI Login (headless server support)
+
+You can add an account from a machine with a browser and import it into a remote server:
+
+```bash
+# On your laptop (with a browser):
+npm run login -- --server http://<server-host>:1456
+
+# After publishing, you can also use:
+npx codex-equilibrium login --server http://<server-host>:1456
+```
+
+The CLI opens an OAuth URL and listens on `http://localhost:1455/auth/callback` locally to receive the code, then exchanges tokens and sends them to the server (`POST /accounts/import`). Ensure port 1455 is free on the client machine during login.
 
 ## Using with Codex CLI
 
@@ -39,7 +53,7 @@ Point your Codex client to the `/v1` proxy, for example:
 # ~/.codex/config.toml
 [model_providers.codex_equilibrium]
 name = "codex_equilibrium"
-base_url = "http://127.0.0.1:1455/v1"
+base_url = "http://127.0.0.1:1456/v1"
 wire_api = "responses"
 ```
 
