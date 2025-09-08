@@ -82,6 +82,7 @@ export function registerOAuth(app: Hono) {
     const meta = decodeJwtPayload(id_token);
     const rec: TokenRecord = {
       id: randomUUID(),
+      type: 'oauth',
       access_token,
       refresh_token,
       id_token,

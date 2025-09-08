@@ -47,6 +47,7 @@ docker run -d \
 ```
 
 Notes:
+
 - The container exposes port `1456`. Adjust the host port as needed.
 - The `auths` directory is required for token persistence and must be mounted: `-v <host_path>/auths:/app/auths`.
 - The image does not include your local `auths/` (see `.dockerignore`). Tokens will be created inside the mounted volume at runtime.
@@ -94,3 +95,13 @@ Authentication is handled by this service via OAuth; an `OPENAI_API_KEY` is not 
 - `GET /accounts` — list accounts: id, email, account_id, masked token, expire
 - `DELETE /accounts/:id` — remove an account
 - `POST /accounts/:id/refresh` — force refresh a token
+
+## Relay Accounts and Activation
+
+The web UI supports creating a Relay account that proxies `/v1/*` directly to another service.
+
+- Click "Add Relay" and fill in:
+  - Name — display label
+  - Base URL — for example `https://xxxxx.com/v1`
+  - API Key — sent as `Authorization: Bearer <API Key>`
+- Use the "Activate" button on any row (OAuth or Relay) to switch the active backend. Subsequent requests to `http://localhost:1456/v1/*` proxy to the active target.

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { readRR, readTokens, removeRecord, updateRecord, writeTokens } from '../storage.js';
+import { readRR, readTokens, removeRecord, updateRecord, writeRR, writeTokens } from '../storage.js';
 import { maskToken, isCoolingDown, isExpired, decodeJwtPayload, parseExpireSeconds } from '../utils.js';
 import { refreshToken } from '../refresh.js';
 import type { TokenRecord } from '../types.js';
@@ -26,6 +26,8 @@ export function registerAccounts(app: Hono) {
           else if (diff <= 5 * 60) status = 'expiring-soon';
           else status = 'active';
         }
+      } else {
+        status = 'active';
       }
 
       const usable = !t.disabled && !isCoolingDown(t) && !isExpired(t);
@@ -43,8 +45,9 @@ export function registerAccounts(app: Hono) {
 
       return {
         id: t.id,
-        email: t.email,
-        account_id: t.account_id,
+        type: t.type || 'oauth',
+        email: t.type === 'relay' ? t.name : t.email,
+        account_id: t.type === 'relay' ? t.base_url : t.account_id,
         created_at: t.created_at,
         last_refresh: t.last_refresh,
         last_used: t.last_used,
@@ -57,7 +60,7 @@ export function registerAccounts(app: Hono) {
         fail_count: t.fail_count || 0,
         last_error_code: t.last_error_code,
         disabled: !!t.disabled,
-        token: maskToken(t.access_token),
+        token: maskToken(t.type === 'relay' ? t.api_key || '' : t.access_token || ''),
       };
     });
     return c.json({ accounts });
@@ -118,6 +121,7 @@ export function registerAccounts(app: Hono) {
     const meta = decodeJwtPayload(id_token);
     const rec: TokenRecord = {
       id: randomUUID(),
+      type: 'oauth',
       access_token,
       refresh_token,
       id_token,
@@ -134,5 +138,43 @@ export function registerAccounts(app: Hono) {
     tokens.push(rec);
     await writeTokens(tokens);
     return c.json({ ok: true, id: rec.id, email: rec.email });
+  });
+
+  // Add a Relay proxy account
+  app.post('/accounts/relay', async (c) => {
+    let body: any = {};
+    try {
+      body = await c.req.json();
+    } catch {}
+    const name = (body?.name || '').trim();
+    const base_url = (body?.base_url || '').trim();
+    const api_key = (body?.api_key || '').trim();
+    if (!name) return c.json({ error: 'missing_name' }, 400);
+    if (!base_url) return c.json({ error: 'missing_base_url' }, 400);
+    if (!api_key) return c.json({ error: 'missing_api_key' }, 400);
+    const rec: TokenRecord = {
+      id: randomUUID(),
+      type: 'relay',
+      name,
+      base_url,
+      api_key,
+      created_at: new Date().toISOString(),
+      disabled: false,
+      fail_count: 0,
+    };
+    const tokens = await readTokens();
+    tokens.push(rec);
+    await writeTokens(tokens);
+    return c.json({ ok: true, id: rec.id, name: rec.name });
+  });
+
+  // Activate a specific account/relay (set rr index to it)
+  app.post('/accounts/:id/activate', async (c) => {
+    const id = c.req.param('id');
+    const tokens = await readTokens();
+    const idx = tokens.findIndex((t) => t.id === id);
+    if (idx < 0) return c.json({ error: 'not_found' }, 404);
+    await writeRR(idx);
+    return c.json({ ok: true, index: idx });
   });
 }

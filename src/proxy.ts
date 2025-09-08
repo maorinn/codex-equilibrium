@@ -20,13 +20,22 @@ function wantStream(payload: any): boolean {
   }
 }
 
+function isRelay(rec: TokenRecord | undefined): boolean {
+  return !!rec && rec.type === 'relay';
+}
+
+function joinBase(base: string, path: string): string {
+  const b = base.replace(/\/+$/, '');
+  return b + path;
+}
+
 async function forwardResponses(c: any, payload: any) {
   const url = `${CHATGPT_ENDPOINT}/responses`;
   const stream = wantStream(payload);
   const body = JSON.stringify(payload);
   const tryOnce = async (token: TokenRecord) => {
     const upstreamHeaders = new Headers(c.req.raw.headers);
-    upstreamHeaders.set('Authorization', `Bearer ${token.access_token}`);
+    upstreamHeaders.set('Authorization', `Bearer ${token.access_token!}`);
     upstreamHeaders.set('Openai-Beta', 'responses=experimental');
     upstreamHeaders.set('Content-Type', 'application/json');
     upstreamHeaders.set('Version', '0.21.0');
@@ -222,7 +231,7 @@ async function robustResponsesStreamFetch(
 
   const tryOnce = async (token: TokenRecord) => {
     const headers = new Headers(c.req.raw.headers);
-    headers.set('Authorization', `Bearer ${token.access_token}`);
+    headers.set('Authorization', `Bearer ${token.access_token!}`);
     headers.set('Openai-Beta', 'responses=experimental');
     headers.set('Content-Type', 'application/json');
     headers.set('Version', '0.21.0');
@@ -266,11 +275,54 @@ export function registerProxy(app: Hono) {
   // POST /v1/responses (stream and non-stream)
   app.post('/v1/responses', async (c) => {
     const payload = await c.req.json();
+    const { rec: first } = await selectNextToken();
+    if (isRelay(first)) {
+      const stream = wantStream(payload);
+      const url = joinBase(first!.base_url || '', '/responses');
+      const headers = new Headers(c.req.raw.headers);
+      headers.set('Authorization', `Bearer ${first!.api_key || ''}`);
+      headers.set('Content-Type', 'application/json');
+      headers.set('Accept', stream ? 'text/event-stream' : 'application/json');
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      const outHeaders = new Headers(resp.headers);
+      if (stream) {
+        outHeaders.set('Cache-Control', 'no-cache');
+        outHeaders.set('Connection', 'keep-alive');
+        if (!outHeaders.get('Content-Type')?.includes('text/event-stream')) {
+          outHeaders.set('Content-Type', 'text/event-stream');
+        }
+      } else {
+        if (!outHeaders.get('Content-Type')?.includes('application/json')) {
+          outHeaders.set('Content-Type', 'application/json');
+        }
+      }
+      return new Response(resp.body, {
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: outHeaders,
+      });
+    }
     return forwardResponses(c, payload);
   });
 
-  // GET /v1/models - static minimal list
+  // GET /v1/models - forward to relay if active; otherwise serve static list
   app.get('/v1/models', async (c) => {
+    const { rec: first } = await selectNextToken();
+    if (isRelay(first)) {
+      const url = joinBase(first!.base_url || '', '/models');
+      const headers = new Headers(c.req.raw.headers);
+      headers.set('Authorization', `Bearer ${first!.api_key || ''}`);
+      const resp = await fetch(url, { method: 'GET', headers });
+      const outHeaders = new Headers(resp.headers);
+      if (!outHeaders.get('Content-Type')?.includes('application/json')) {
+        outHeaders.set('Content-Type', 'application/json');
+      }
+      return new Response(resp.body, { status: resp.status, headers: outHeaders });
+    }
     return c.json({
       object: 'list',
       data: [
@@ -286,6 +338,37 @@ export function registerProxy(app: Hono) {
 
   app.post('/v1/chat/completions', async (c) => {
     const original = await c.req.json();
+    const { rec: first } = await selectNextToken();
+    if (isRelay(first)) {
+      const stream = !!original?.stream;
+      const url = joinBase(first!.base_url || '', '/chat/completions');
+      const headers = new Headers(c.req.raw.headers);
+      headers.set('Authorization', `Bearer ${first!.api_key || ''}`);
+      headers.set('Content-Type', 'application/json');
+      headers.set('Accept', stream ? 'text/event-stream' : 'application/json');
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(original),
+      });
+      const outHeaders = new Headers(resp.headers);
+      if (stream) {
+        outHeaders.set('Cache-Control', 'no-cache');
+        outHeaders.set('Connection', 'keep-alive');
+        if (!outHeaders.get('Content-Type')?.includes('text/event-stream')) {
+          outHeaders.set('Content-Type', 'text/event-stream');
+        }
+      } else {
+        if (!outHeaders.get('Content-Type')?.includes('application/json')) {
+          outHeaders.set('Content-Type', 'application/json');
+        }
+      }
+      return new Response(resp.body, {
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: outHeaders,
+      });
+    }
     const converted = convertChatCompletionsToResponses(original);
     const stream = !!original?.stream;
 
@@ -369,19 +452,31 @@ export function registerProxy(app: Hono) {
     }
     const tryOnce = async (token: TokenRecord) => {
       const upstreamHeaders = new Headers(c.req.raw.headers);
-      upstreamHeaders.set('Authorization', `Bearer ${token.access_token}`);
-      upstreamHeaders.set('Openai-Beta', 'responses=experimental');
-      upstreamHeaders.set('Content-Type', 'application/json');
-      upstreamHeaders.set('Version', '0.21.0');
-      upstreamHeaders.set('Session_id', randomUUID());
-      if (token.account_id)
-        upstreamHeaders.set('Chatgpt-Account-Id', token.account_id);
-      upstreamHeaders.set('Originator', 'codex_cli_rs');
-      upstreamHeaders.set(
-        'Accept',
-        stream ? 'text/event-stream' : 'application/json'
-      );
-      return fetch(url, { method: c.req.method, headers: upstreamHeaders, body });
+      if (token.type === 'relay') {
+        const relayUrl = joinBase(token.base_url || '', targetPath);
+        upstreamHeaders.set('Authorization', `Bearer ${token.api_key || ''}`);
+        upstreamHeaders.set('Content-Type', 'application/json');
+        upstreamHeaders.set('Accept', stream ? 'text/event-stream' : 'application/json');
+        return fetch(relayUrl, {
+          method: c.req.method,
+          headers: upstreamHeaders,
+          body,
+        });
+      } else {
+        upstreamHeaders.set('Authorization', `Bearer ${token.access_token!}`);
+        upstreamHeaders.set('Openai-Beta', 'responses=experimental');
+        upstreamHeaders.set('Content-Type', 'application/json');
+        upstreamHeaders.set('Version', '0.21.0');
+        upstreamHeaders.set('Session_id', randomUUID());
+        if (token.account_id)
+          upstreamHeaders.set('Chatgpt-Account-Id', token.account_id);
+        upstreamHeaders.set('Originator', 'codex_cli_rs');
+        upstreamHeaders.set(
+          'Accept',
+          stream ? 'text/event-stream' : 'application/json'
+        );
+        return fetch(url, { method: c.req.method, headers: upstreamHeaders, body });
+      }
     };
 
     const { rec: first, total } = await selectNextToken();
@@ -467,29 +562,31 @@ export function registerProxy(app: Hono) {
         });
       }
 
-      // Try refresh, then try again
-      const refreshed = await refreshToken(current);
-      if (refreshed) {
-        current = refreshed;
-        resp = await tryOnce(current);
-        if (resp.ok) {
-          const headers = new Headers(resp.headers);
-          if (stream) {
-            headers.set('Cache-Control', 'no-cache');
-            headers.set('Connection', 'keep-alive');
-            if (!headers.get('Content-Type')?.includes('text/event-stream')) {
-              headers.set('Content-Type', 'text/event-stream');
+      // Try refresh (oauth only), then try again
+      if (current.type !== 'relay') {
+        const refreshed = await refreshToken(current);
+        if (refreshed) {
+          current = refreshed;
+          resp = await tryOnce(current);
+          if (resp.ok) {
+            const headers = new Headers(resp.headers);
+            if (stream) {
+              headers.set('Cache-Control', 'no-cache');
+              headers.set('Connection', 'keep-alive');
+              if (!headers.get('Content-Type')?.includes('text/event-stream')) {
+                headers.set('Content-Type', 'text/event-stream');
+              }
+            } else {
+              if (!headers.get('Content-Type')?.includes('application/json')) {
+                headers.set('Content-Type', 'application/json');
+              }
             }
-          } else {
-            if (!headers.get('Content-Type')?.includes('application/json')) {
-              headers.set('Content-Type', 'application/json');
-            }
+            return new Response(resp.body, {
+              status: resp.status,
+              statusText: resp.statusText,
+              headers,
+            });
           }
-          return new Response(resp.body, {
-            status: resp.status,
-            statusText: resp.statusText,
-            headers,
-          });
         }
       }
 
